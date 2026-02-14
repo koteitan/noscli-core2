@@ -223,7 +223,10 @@ bool decodePngToSprite(const uint8_t* imgBuf, int imgLen, TFT_eSprite& sprite, i
   if ((bitDepth != 8 && bitDepth != 4 && bitDepth != 2 && bitDepth != 1) || interlace != 0) { Serial.println("[PNG] unsupported depth/interlace"); return false; }
   if (colorType != 0 && colorType != 2 && colorType != 3 && colorType != 6) { Serial.printf("[PNG] unsupported colorType=%d\n", colorType); return false; }
   // メモリ制限: 256x256以上はスキップ（ESP32ヒープ保護）
-  if (pngW > 1024 || pngH > 1024) { Serial.println("[PNG] too large, skip"); return false; }
+  // rawSize制限: PSRAM空き容量内に収める
+  int channels_est = (colorType == 0) ? 1 : (colorType == 2) ? 3 : (colorType == 3) ? 1 : 4;
+  size_t rawSize_est = (size_t)(1 + pngW * channels_est) * pngH;
+  if (rawSize_est > 4000000) { Serial.printf("[PNG] too large (%dx%d, rawSize=%d), skip\n", pngW, pngH, rawSize_est); return false; }
 
   // channels: ピクセルあたりのバイト数（8bit時）。パレットとグレースケールは1
   int channels = (colorType == 0) ? 1 : (colorType == 2) ? 3 : (colorType == 3) ? 1 : 4;
