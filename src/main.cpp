@@ -422,7 +422,7 @@ bool downloadIcon(MetaEntry* meta) {
 
   int contentLen = http.getSize();
   Serial.printf("[ICON] contentLen: %d\n", contentLen);
-  if (contentLen > 500000 || contentLen == 0) {
+  if (contentLen > 500000) {
     Serial.printf("[ICON] size skip: %d\n", contentLen);
     http.end();
     meta->iconFailed = true;
@@ -430,30 +430,38 @@ bool downloadIcon(MetaEntry* meta) {
     return false;
   }
 
-  // 画像データをバッファに読み込み（chunked transfer対応）
-  int bufSize = contentLen > 0 ? contentLen : 500000; // Content-Lengthなしの場合は最大500KB
-  if (bufSize > 500000) bufSize = 500000;
-  uint8_t* imgBuf = (uint8_t*)malloc(bufSize);
-  if (!imgBuf) {
-    http.end();
-    meta->iconFailed = true;
-    iconPoolUsed[poolIdx] = false;
-    return false;
-  }
-
-  // HTTPClient::getStream() handles chunked transfer decoding internally
-  WiFiClient& stream = http.getStream();
+  // 画像データをバッファに読み込み
+  uint8_t* imgBuf = NULL;
   int totalRead = 0;
-  while (totalRead < bufSize && http.connected()) {
-    int avail = stream.available();
-    if (avail > 0) {
-      int toRead = min(avail, bufSize - totalRead);
-      int bytesRead = stream.readBytes(imgBuf + totalRead, toRead);
-      totalRead += bytesRead;
-    } else {
-      delay(1);
+
+  if (contentLen > 0) {
+    // Content-Length既知: 直接ストリーム読み取り
+    if (contentLen > 500000) {
+      Serial.printf("[ICON] size skip: %d\n", contentLen);
+      http.end(); meta->iconFailed = true; iconPoolUsed[poolIdx] = false; return false;
     }
-    yield();
+    imgBuf = (uint8_t*)malloc(contentLen);
+    if (!imgBuf) { http.end(); meta->iconFailed = true; iconPoolUsed[poolIdx] = false; return false; }
+    WiFiClient* stream = http.getStreamPtr();
+    unsigned long dlStart = millis();
+    while (totalRead < contentLen && http.connected()) {
+      int avail = stream->available();
+      if (avail > 0) {
+        int toRead = min(avail, contentLen - totalRead);
+        totalRead += stream->readBytes(imgBuf + totalRead, toRead);
+      } else { delay(1); }
+      if (millis() - dlStart > 10000) break;
+      yield();
+    }
+  } else {
+    // Content-Length不明(chunked): getStringでHTTPClientにデコードさせる
+    String body = http.getString();
+    totalRead = body.length();
+    if (totalRead > 0 && totalRead <= 500000) {
+      imgBuf = (uint8_t*)malloc(totalRead);
+      if (imgBuf) memcpy(imgBuf, body.c_str(), totalRead);
+    }
+    Serial.printf("[ICON] chunked body: %d bytes\n", totalRead);
   }
   http.end();
 
