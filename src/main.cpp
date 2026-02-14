@@ -20,24 +20,31 @@ bool started = false;  // ボタン押すまでfalse
 
 // efontで1文字描画、文字幅を返す
 int efontDrawChar(int x, int y, uint16_t utf16, uint16_t color) {
+  // ASCII文字はM5Stack内蔵フォントで描画（確実）
+  if (utf16 >= 0x20 && utf16 <= 0x7E) {
+    char c[2] = {(char)utf16, 0};
+    M5.Lcd.setTextColor(color, BLACK);
+    M5.Lcd.setTextSize(2);
+    M5.Lcd.setCursor(x, y);
+    M5.Lcd.print(c);
+    return 12; // size2のASCIIは約12px幅
+  }
+  
+  // 日本語等はefontで描画
   byte font[32];
   memset(font, 0, 32);
   getefontData(font, utf16);
   
-  // 半角(8px) or 全角(16px) 判定
-  bool isWide = (utf16 >= 0x100);
-  int w = isWide ? 16 : 8;
-  
   for (int row = 0; row < 16; row++) {
-    for (int col = 0; col < w; col++) {
-      int byteIndex = row * (w / 8) + col / 8;
+    for (int col = 0; col < 16; col++) {
+      int byteIndex = row * 2 + col / 8;
       int bitIndex = 7 - (col % 8);
       if (font[byteIndex] & (1 << bitIndex)) {
         M5.Lcd.drawPixel(x + col, y + row, color);
       }
     }
   }
-  return w;
+  return 16;
 }
 
 // UTF-8文字列を描画（折り返し対応）、使った高さを返す
@@ -52,7 +59,12 @@ int efontDrawString(int x, int y, const String& str, uint16_t color, int maxWidt
     p = efontUFT8toUTF16(&utf16, p);
     if (utf16 == 0) continue;
     
-    int charWidth = (utf16 >= 0x100) ? 16 : 8;
+    int charWidth;
+    if (utf16 >= 0x20 && utf16 <= 0x7E) {
+      charWidth = 12; // 内蔵フォントsize2
+    } else {
+      charWidth = 16; // efont全角
+    }
     
     // 折り返し
     if (cx + charWidth > x + maxWidth) {
