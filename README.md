@@ -9,7 +9,7 @@ M5Stack Core2で動くNostrクライアント 🐾
 - Nostrリレー(WebSocket)に接続してタイムライン表示
 - プロフィール画像の表示（JPEG / PNG / WebP / data:URI対応）
 - 日本語表示（efontライブラリ）
-- WiFi経由のファームウェア更新
+- WiFi経由の書き込み
 
 ## 必要なもの
 
@@ -36,7 +36,7 @@ cp secrets.h.example secrets.h  # WiFi認証情報・リレーを設定
 pio run -e m5stack-core2 -t upload
 ```
 
-### ファームウェア更新（WiFi経由）
+### 書き込み（WiFi経由）
 
 ```bash
 pio run -e m5stack-core2 && curl -sF "firmware=@.pio/build/m5stack-core2/firmware.bin" http://<ESP32のIP>/update
