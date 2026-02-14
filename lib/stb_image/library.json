@@ -1,0 +1,7 @@
+{
+  "name": "stb_image",
+  "version": "2.30.0",
+  "build": {
+    "flags": ["-I../../lib/stb_image/src"]
+  }
+}

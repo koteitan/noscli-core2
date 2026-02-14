@@ -11,6 +11,7 @@
 #include "../secrets.h"
 #include <rom/miniz.h>
 #include <webp/decode.h>
+#include "stb_image.h"
 
 #define VERSION "v1.3.0"
 #define RELAY_HOST "yabu.me"
@@ -474,12 +475,38 @@ bool downloadIcon(MetaEntry* meta) {
     }
     Serial.printf("[JPEG] original: %dx%d%s\n", jpgW, jpgH, progressiveJpeg ? " (progressive)" : "");
     if (progressiveJpeg) {
-      Serial.println("[JPEG] progressive not supported, skip");
+      Serial.println("[JPEG] progressive - using stb_image");
+      // stb_imageでデコード
+      int stbW, stbH, stbCh;
+      uint8_t* stbData = stbi_load_from_memory(imgBuf, totalRead, &stbW, &stbH, &stbCh, 3);
+      if (!stbData) {
+        Serial.printf("[JPEG] stb decode failed: %s\n", stbi_failure_reason());
+        free(imgBuf);
+        sprite.deleteSprite();
+        meta->iconFailed = true;
+        iconPoolUsed[poolIdx] = false;
+        return false;
+      }
+      Serial.printf("[JPEG] stb decoded: %dx%d ch=%d\n", stbW, stbH, stbCh);
       free(imgBuf);
+      // Spriteを適切なサイズに
       sprite.deleteSprite();
-      meta->iconFailed = true;
-      iconPoolUsed[poolIdx] = false;
-      return false;
+      spriteSize = min(max(stbW, stbH), 128);
+      sprite.createSprite(spriteSize, spriteSize);
+      sprite.fillSprite(BLACK);
+      // RGB→Spriteに描画（ニアレストネイバー縮小）
+      for (int dy = 0; dy < spriteSize; dy++) {
+        int srcY = dy * stbH / spriteSize;
+        for (int dx = 0; dx < spriteSize; dx++) {
+          int srcX = dx * stbW / spriteSize;
+          int idx = (srcY * stbW + srcX) * 3;
+          sprite.drawPixel(dx, dy, sprite.color565(stbData[idx], stbData[idx+1], stbData[idx+2]));
+        }
+        if (dy % 20 == 0) yield();
+      }
+      stbi_image_free(stbData);
+      // リサンプル→iconPoolへ（以降の共通処理に流す）
+      goto resample_to_icon;
     }
     // スケール選択: デコード後がspriteSize以下になる最大スケール
     jpeg_div_eSprite_t jpgScale = JPEG_DIV_ESPRITE_NONE;
@@ -545,6 +572,7 @@ bool downloadIcon(MetaEntry* meta) {
   }
   free(imgBuf);
 
+resample_to_icon:
   // spriteSize x spriteSize → 32x32 にニアレストネイバーで縮小
   // pushImageはバイトスワップされたRGB565を期待する場合があるのでswap
   for (int y = 0; y < ICON_SIZE; y++) {
