@@ -12,7 +12,7 @@
 #include <rom/miniz.h>
 #include <webp/decode.h>
 
-#define VERSION "v1.2.2"
+#define VERSION "v1.3.0"
 #define RELAY_HOST "yabu.me"
 #define RELAY_PORT 443
 #define RELAY_PATH "/"
@@ -516,21 +516,16 @@ bool downloadIcon(MetaEntry* meta) {
 
 // --- efont描画 ---
 int efontDrawChar(int x, int y, uint16_t utf16, uint16_t color) {
-  if (utf16 >= 0x20 && utf16 <= 0x7E) {
-    char c[2] = {(char)utf16, 0};
-    M5.Lcd.setTextColor(color, BLACK);
-    M5.Lcd.setTextSize(2);
-    M5.Lcd.setCursor(x, y);
-    M5.Lcd.print(c);
-    return 12;
-  }
-
   byte font[32];
   memset(font, 0, 32);
   getefontData(font, utf16);
 
+  // ASCII(半角)は8px幅、CJKは16px幅
+  bool halfWidth = (utf16 >= 0x20 && utf16 <= 0x7E);
+  int charWidth = halfWidth ? 8 : 16;
+
   for (int row = 0; row < 16; row++) {
-    for (int col = 0; col < 16; col++) {
+    for (int col = 0; col < charWidth; col++) {
       int byteIndex = row * 2 + col / 8;
       int bitIndex = 7 - (col % 8);
       if (font[byteIndex] & (1 << bitIndex)) {
@@ -538,7 +533,7 @@ int efontDrawChar(int x, int y, uint16_t utf16, uint16_t color) {
       }
     }
   }
-  return 16;
+  return charWidth;
 }
 
 int efontDrawString(int x, int y, const String& str, uint16_t color, int maxWidth, int maxLines) {
@@ -573,7 +568,7 @@ void drawHeader() {
   M5.Lcd.print("noscli-core2");
   M5.Lcd.setTextSize(1);
   M5.Lcd.setTextColor(CYAN);
-  M5.Lcd.setCursor(150, 10);
+  M5.Lcd.setCursor(160, 10);
   M5.Lcd.print(VERSION);
   M5.Lcd.setCursor(230, 10);
   if (connected) {
@@ -664,11 +659,8 @@ void drawStatus(const char* msg) {
 }
 
 void drawIconStatusBar() {
-  M5.Lcd.fillRect(0, 222, 320, 18, BLACK);
+  M5.Lcd.fillRect(0, 239, 320, 1, BLACK);
   if (metaCacheCount == 0) return;
-
-  int barWidth = 320 / metaCacheCount;
-  if (barWidth < 1) barWidth = 1;
 
   for (int i = 0; i < metaCacheCount; i++) {
     uint16_t color;
@@ -681,7 +673,8 @@ void drawIconStatusBar() {
     }
     int x = i * 320 / metaCacheCount;
     int w = (i + 1) * 320 / metaCacheCount - x;
-    M5.Lcd.fillRect(x, 222, w, 18, color);
+    if (w < 1) w = 1;
+    M5.Lcd.fillRect(x, 239, w, 1, color);
   }
 }
 
