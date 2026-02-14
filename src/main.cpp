@@ -454,13 +454,28 @@ bool downloadIcon(MetaEntry* meta) {
       yield();
     }
   } else {
-    // Content-Length不明(chunked): getStringでHTTPClientにデコードさせる
-    String body = http.getString();
-    totalRead = body.length();
-    if (totalRead > 0 && totalRead <= 500000) {
-      imgBuf = (uint8_t*)malloc(totalRead);
-      if (imgBuf) memcpy(imgBuf, body.c_str(), totalRead);
-    }
+    // Content-Length不明(chunked): writeToStreamでHTTPClientにデコードさせる
+    // カスタムStreamクラスでバイナリデータをバッファに受け取る
+    class BufStream : public Stream {
+    public:
+      uint8_t* buf; int pos; int cap;
+      BufStream(uint8_t* b, int c) : buf(b), pos(0), cap(c) {}
+      size_t write(uint8_t b) override { if (pos < cap) { buf[pos++] = b; return 1; } return 0; }
+      size_t write(const uint8_t* d, size_t len) override {
+        int toWrite = min((int)len, cap - pos);
+        memcpy(buf + pos, d, toWrite); pos += toWrite; return toWrite;
+      }
+      int available() override { return 0; }
+      int read() override { return -1; }
+      int peek() override { return -1; }
+      void flush() override {}
+    };
+    int bufSize = 500000;
+    imgBuf = (uint8_t*)malloc(bufSize);
+    if (!imgBuf) { http.end(); meta->iconFailed = true; iconPoolUsed[poolIdx] = false; return false; }
+    BufStream bs(imgBuf, bufSize);
+    http.writeToStream(&bs);
+    totalRead = bs.pos;
     Serial.printf("[ICON] chunked body: %d bytes\n", totalRead);
   }
   http.end();

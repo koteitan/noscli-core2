@@ -16,6 +16,9 @@
 #include <assert.h>
 #include <stdlib.h>
 #include <string.h>  // for memcpy()
+#ifdef ESP_PLATFORM
+#include "esp_heap_caps.h"
+#endif
 
 #include "src/utils/bounds_safety.h"
 #include "src/utils/palette.h"
@@ -207,7 +210,11 @@ void* WEBP_SIZED_BY_OR_NULL(nmemb* size)
   Increment(&num_malloc_calls);
   if (!CheckSizeArgumentsOverflow(nmemb, size)) return NULL;
   assert(nmemb * size > 0);
+#ifdef ESP_PLATFORM
+  ptr = heap_caps_malloc((size_t)(nmemb * size), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#else
   ptr = malloc((size_t)(nmemb * size));
+#endif
   AddMem(ptr, (size_t)(nmemb * size));
   return WEBP_UNSAFE_FORGE_BIDI_INDEXABLE(void*, ptr, (size_t)(nmemb * size));
 }
@@ -218,7 +225,11 @@ void* WEBP_SIZED_BY_OR_NULL(nmemb* size)
   Increment(&num_calloc_calls);
   if (!CheckSizeArgumentsOverflow(nmemb, size)) return NULL;
   assert(nmemb * size > 0);
+#ifdef ESP_PLATFORM
+  ptr = heap_caps_calloc((size_t)nmemb, size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#else
   ptr = calloc((size_t)nmemb, size);
+#endif
   AddMem(ptr, (size_t)(nmemb * size));
   return WEBP_UNSAFE_FORGE_BIDI_INDEXABLE(void*, ptr, (size_t)(nmemb * size));
 }
