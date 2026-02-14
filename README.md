@@ -1,57 +1,39 @@
-# ncl-esp32
+# noscli-core2
 
-ESP32で動くnostrクライアント 🐾
+![noscli-core2](noscli-core2.jpg)
 
-## 概要
+M5Stack Core2で動くNostrクライアント 🐾
 
-ESP32を使った軽量nostrクライアント実装です。
+## 機能
 
-## 現在の状態
-
-Hello World / LED点滅テスト
-
-## 機能（予定）
-
-- [ ] nostrリレーへの接続
-- [ ] イベント受信
-- [ ] イベント投稿
-- [ ] NIP-01 基本プロトコル対応
-- [ ] WiFi接続管理
+- Nostrリレー(WebSocket)に接続してタイムライン表示
+- プロフィール画像の表示（JPEG / PNG / WebP / data:URI対応）
+- 日本語表示（efontライブラリ）
+- Web OTAによるファームウェア更新
 
 ## 必要なもの
 
-- ESP32開発ボード
-- PlatformIO または Arduino IDE
-- USB-Cケーブル（書き込み用）
+- M5Stack Core2
+- PlatformIO
+- WiFi環境
 
 ## セットアップ
 
-### PlatformIO使用の場合
-
 ```bash
-# プロジェクトをクローン
-git clone https://github.com/koteitan/ncl-esp32.git
-cd ncl-esp32
-
-# ビルド＆書き込み
-pio run -t upload
-
-# シリアルモニタで確認
-pio device monitor
+git clone https://github.com/koteitan/noscli-core2.git
+cd noscli-core2
+cp secrets.h.example secrets.h  # WiFi認証情報を設定
+pio run -e m5stack-core2 -t upload
 ```
 
-### Arduino IDE使用の場合
+### OTA更新
 
-1. `src/main.cpp` を `ncl-esp32.ino` にリネームして開く
-2. ボード設定: ESP32 Dev Module
-3. 書き込み速度: 115200
-4. 書き込み実行
-
-## 動作確認
-
-- 内蔵LED（GPIO2）が1秒間隔で点滅
-- シリアル出力でチップ情報とLED状態を表示
+```bash
+pio run -e m5stack-core2 && curl -sF "firmware=@.pio/build/m5stack-core2/firmware.bin" http://<ESP32のIP>/update
+```
 
 ## ライセンス
 
 MIT
+
+サードパーティライブラリのライセンスは [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) を参照。
