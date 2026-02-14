@@ -461,7 +461,43 @@ bool downloadIcon(MetaEntry* meta) {
   if (imgBuf[0] == 0xFF && imgBuf[1] == 0xD8) {
     // JPEG
     Serial.println("[ICON] JPEG decode start");
-    sprite.drawJpg(imgBuf, totalRead, 0, 0, spriteSize, spriteSize);
+    // JPEGの元サイズを取得してスケール選択
+    int jpgW = 0, jpgH = 0;
+    for (int ji = 0; ji < totalRead - 9; ji++) {
+      if (imgBuf[ji] == 0xFF && (imgBuf[ji+1] == 0xC0 || imgBuf[ji+1] == 0xC1 || imgBuf[ji+1] == 0xC2)) {
+        jpgH = (imgBuf[ji+5] << 8) | imgBuf[ji+6];
+        jpgW = (imgBuf[ji+7] << 8) | imgBuf[ji+8];
+        break;
+      }
+    }
+    Serial.printf("[JPEG] original: %dx%d\n", jpgW, jpgH);
+    // スケール選択: デコード後がspriteSize以下になる最大スケール
+    jpeg_div_eSprite_t jpgScale = JPEG_DIV_ESPRITE_NONE;
+    int maxDim = max(jpgW, jpgH);
+    if (maxDim > spriteSize * 4) jpgScale = JPEG_DIV_ESPRITE_8;
+    else if (maxDim > spriteSize * 2) jpgScale = JPEG_DIV_ESPRITE_4;
+    else if (maxDim > spriteSize) jpgScale = JPEG_DIV_ESPRITE_2;
+    // スケール後のサイズでSpriteを再作成
+    int scaledDim = maxDim;
+    if (jpgScale == JPEG_DIV_ESPRITE_8) scaledDim = maxDim / 8;
+    else if (jpgScale == JPEG_DIV_ESPRITE_4) scaledDim = maxDim / 4;
+    else if (jpgScale == JPEG_DIV_ESPRITE_2) scaledDim = maxDim / 2;
+    if (scaledDim > spriteSize) scaledDim = spriteSize; // クリップ
+    // Spriteをデコードサイズに合わせて再作成
+    int jpgDecW = jpgW, jpgDecH = jpgH;
+    if (jpgScale == JPEG_DIV_ESPRITE_8) { jpgDecW /= 8; jpgDecH /= 8; }
+    else if (jpgScale == JPEG_DIV_ESPRITE_4) { jpgDecW /= 4; jpgDecH /= 4; }
+    else if (jpgScale == JPEG_DIV_ESPRITE_2) { jpgDecW /= 2; jpgDecH /= 2; }
+    if (jpgDecW < 1) jpgDecW = 1;
+    if (jpgDecH < 1) jpgDecH = 1;
+    int jpgSprSize = max(jpgDecW, jpgDecH);
+    if (jpgSprSize > spriteSize) jpgSprSize = spriteSize;
+    sprite.deleteSprite();
+    spriteSize = jpgSprSize;
+    sprite.createSprite(spriteSize, spriteSize);
+    sprite.fillSprite(BLACK);
+    Serial.printf("[JPEG] scale=%d, spriteSize=%d (%dx%d)\n", jpgScale, spriteSize, jpgDecW, jpgDecH);
+    sprite.drawJpg(imgBuf, totalRead, 0, 0, spriteSize, spriteSize, 0, 0, jpgScale);
     Serial.println("[ICON] JPEG decode done");
   } else if (imgBuf[0] == 0x89 && imgBuf[1] == 0x50) {
     // PNG
