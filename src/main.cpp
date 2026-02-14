@@ -223,7 +223,7 @@ bool decodePngToSprite(const uint8_t* imgBuf, int imgLen, TFT_eSprite& sprite, i
   if ((bitDepth != 8 && bitDepth != 4 && bitDepth != 2 && bitDepth != 1) || interlace != 0) { Serial.println("[PNG] unsupported depth/interlace"); return false; }
   if (colorType != 0 && colorType != 2 && colorType != 3 && colorType != 6) { Serial.printf("[PNG] unsupported colorType=%d\n", colorType); return false; }
   // メモリ制限: 256x256以上はスキップ（ESP32ヒープ保護）
-  if (pngW > 512 || pngH > 512) { Serial.println("[PNG] too large, skip"); return false; }
+  if (pngW > 1024 || pngH > 1024) { Serial.println("[PNG] too large, skip"); return false; }
 
   // channels: ピクセルあたりのバイト数（8bit時）。パレットとグレースケールは1
   int channels = (colorType == 0) ? 1 : (colorType == 2) ? 3 : (colorType == 3) ? 1 : 4;
@@ -430,8 +430,10 @@ bool downloadIcon(MetaEntry* meta) {
     return false;
   }
 
-  // 画像データをバッファに読み込み
-  uint8_t* imgBuf = (uint8_t*)malloc(contentLen > 0 ? contentLen : 50000);
+  // 画像データをバッファに読み込み（chunked transfer対応）
+  int bufSize = contentLen > 0 ? contentLen : 500000; // Content-Lengthなしの場合は最大500KB
+  if (bufSize > 500000) bufSize = 500000;
+  uint8_t* imgBuf = (uint8_t*)malloc(bufSize);
   if (!imgBuf) {
     http.end();
     meta->iconFailed = true;
@@ -439,13 +441,14 @@ bool downloadIcon(MetaEntry* meta) {
     return false;
   }
 
-  WiFiClient* stream = http.getStreamPtr();
+  // HTTPClient::getStream() handles chunked transfer decoding internally
+  WiFiClient& stream = http.getStream();
   int totalRead = 0;
-  while (totalRead < (contentLen > 0 ? contentLen : 50000) && http.connected()) {
-    int avail = stream->available();
+  while (totalRead < bufSize && http.connected()) {
+    int avail = stream.available();
     if (avail > 0) {
-      int toRead = min(avail, (contentLen > 0 ? contentLen : 50000) - totalRead);
-      int bytesRead = stream->readBytes(imgBuf + totalRead, toRead);
+      int toRead = min(avail, bufSize - totalRead);
+      int bytesRead = stream.readBytes(imgBuf + totalRead, toRead);
       totalRead += bytesRead;
     } else {
       delay(1);
