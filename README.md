@@ -19,6 +19,16 @@ M5Stack Core2で動くNostrクライアント 🐾
 
 ## セットアップ
 
+### PlatformIOのインストール
+
+```bash
+pip install platformio
+```
+
+または [公式サイト](https://platformio.org/install) からVSCode拡張としてインストール。
+
+### ビルド＆書き込み
+
 ```bash
 git clone https://github.com/koteitan/noscli-core2.git
 cd noscli-core2
