@@ -27,18 +27,17 @@ pip install platformio
 
 または [公式サイト](https://platformio.org/install) からVSCode拡張としてインストール。
 
-### ビルド＆書き込み（USB経由）
+### ビルド＆書き込み
 
 ```bash
 git clone https://github.com/koteitan/noscli-core2.git
 cd noscli-core2
 cp secrets.h.example secrets.h  # WiFi認証情報・リレーを設定
+
+# 書き込み (USB経由)
 pio run -e m5stack-core2 -t upload
-```
 
-### 書き込み（WiFi経由）
-
-```bash
+# 書き込み (WiFi経由)
 pio run -e m5stack-core2 && curl -sF "firmware=@.pio/build/m5stack-core2/firmware.bin" http://<ESP32のIP>/update
 ```
 
