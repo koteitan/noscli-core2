@@ -25,7 +25,7 @@ extern "C" {
 }
 #pragma pop_macro("boolean")
 
-#define VERSION "v1.4.0"
+#define VERSION "v1.5.0"
 #define RELAY_HOST "yabu.me"
 #define RELAY_PORT 443
 #define RELAY_PATH "/"
@@ -223,10 +223,9 @@ bool decodePngToSprite(const uint8_t* imgBuf, int imgLen, TFT_eSprite& sprite, i
   if ((bitDepth != 8 && bitDepth != 4 && bitDepth != 2 && bitDepth != 1) || interlace != 0) { Serial.println("[PNG] unsupported depth/interlace"); return false; }
   if (colorType != 0 && colorType != 2 && colorType != 3 && colorType != 6) { Serial.printf("[PNG] unsupported colorType=%d\n", colorType); return false; }
   // メモリ制限: 256x256以上はスキップ（ESP32ヒープ保護）
-  // rawSize制限: PSRAM空き容量内に収める
-  int channels_est = (colorType == 0) ? 1 : (colorType == 2) ? 3 : (colorType == 3) ? 1 : 4;
-  size_t rawSize_est = (size_t)(1 + pngW * channels_est) * pngH;
-  if (rawSize_est > 4000000) { Serial.printf("[PNG] too large (%dx%d, rawSize=%d), skip\n", pngW, pngH, rawSize_est); return false; }
+  // ストリーミングデコードなので大きな画像もOK（メモリは行バッファ+32KBリングのみ）
+  // ただし極端に大きい場合はDL時間がかかるので制限
+  if (pngW > 4096 || pngH > 4096) { Serial.printf("[PNG] too large %dx%d, skip\n", pngW, pngH); return false; }
 
   // channels: ピクセルあたりのバイト数（8bit時）。パレットとグレースケールは1
   int channels = (colorType == 0) ? 1 : (colorType == 2) ? 3 : (colorType == 3) ? 1 : 4;
@@ -287,105 +286,130 @@ bool decodePngToSprite(const uint8_t* imgBuf, int imgLen, TFT_eSprite& sprite, i
   // デコード先: 各行 = filterByte(1) + ceil(width * channels * bitDepth / 8)
   size_t pixelBits = pngW * channels * bitDepth;
   size_t rowBytes = 1 + (pixelBits + 7) / 8;
-  size_t rawSize = rowBytes * pngH;
-  uint8_t* rawBuf = (uint8_t*)malloc(rawSize);
-  Serial.printf("[PNG] rawSize=%d, idatSize=%d, free heap=%d, psram=%d\n", rawSize, totalIdat, ESP.getFreeHeap(), ESP.getFreePsram());
-  if (!rawBuf) { Serial.println("[PNG] rawBuf malloc failed"); free(idatBuf); return false; }
+  int stride = (int)(rowBytes - 1); // filterByte除く1行のバイト数
+  int bpp = max(1, (channels * bitDepth + 7) / 8);
 
-  // tinfl_decompressor をヒープに確保（スタック節約、構造体が~11KB）
+  Serial.printf("[PNG] rowBytes=%d, stride=%d, idatSize=%d, heap=%d, psram=%d\n",
+    rowBytes, stride, totalIdat, ESP.getFreeHeap(), ESP.getFreePsram());
+
+  // ストリーミングデコード: リングバッファ + 2行分のみ確保
+  // tinflリングバッファ: 2のべき乗サイズ（32KB）
+  const size_t RING_SIZE = 32768;
+  uint8_t* ringBuf = (uint8_t*)malloc(RING_SIZE);
+  uint8_t* curRow = (uint8_t*)malloc(stride);
+  uint8_t* prevRowBuf = (uint8_t*)calloc(stride, 1);
   tinfl_decompressor* decomp = (tinfl_decompressor*)malloc(sizeof(tinfl_decompressor));
-  if (!decomp) { Serial.println("[PNG] decomp malloc failed"); free(idatBuf); free(rawBuf); return false; }
+  if (!ringBuf || !curRow || !prevRowBuf || !decomp) {
+    Serial.println("[PNG] stream alloc failed");
+    free(ringBuf); free(curRow); free(prevRowBuf); free(decomp); free(idatBuf);
+    return false;
+  }
   tinfl_init(decomp);
 
-  // zlibヘッダごとtinflに渡す（手動スキップしない）
-  const uint8_t* zlibData = idatBuf; // zlib header + deflate + adler32
+  const uint8_t* zlibData = idatBuf;
   size_t zlibLen = totalIdat;
-  size_t inPos = 0, outPos = 0;
-  tinfl_status status;
-  do {
+  size_t inPos = 0;
+  size_t ringPos = 0;       // リングバッファ内の書き込み位置
+  size_t rowBufPos = 0;     // 現在の行バッファ内の位置（filterByte含む）
+  uint32_t curY = 0;        // 現在の行番号
+  uint8_t filterType = 0;
+  bool decodeOk = true;
+  tinfl_status status = TINFL_STATUS_NEEDS_MORE_INPUT;
+
+  // 行データ一時バッファ（filterByte + stride）
+  uint8_t* rowRaw = (uint8_t*)malloc(rowBytes);
+  if (!rowRaw) { free(ringBuf); free(curRow); free(prevRowBuf); free(decomp); free(idatBuf); return false; }
+
+  while (curY < pngH && status != TINFL_STATUS_DONE) {
+    // tinflでリングバッファにデコード
     size_t inBytes = zlibLen - inPos;
-    size_t outBytes = rawSize - outPos;
-    int flags = TINFL_FLAG_PARSE_ZLIB_HEADER | TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF;
-    if (inPos + inBytes < zlibLen) flags |= TINFL_FLAG_HAS_MORE_INPUT;
-    status = tinfl_decompress(decomp, zlibData + inPos, &inBytes, rawBuf, rawBuf + outPos, &outBytes, flags);
+    size_t outBytes = RING_SIZE - (ringPos & (RING_SIZE - 1));
+    int flags = TINFL_FLAG_PARSE_ZLIB_HEADER | TINFL_FLAG_HAS_MORE_INPUT;
+    if (inPos + inBytes >= zlibLen) flags &= ~TINFL_FLAG_HAS_MORE_INPUT;
+    // リングバッファモード（NON_WRAPPINGフラグなし）
+    uint8_t* outStart = ringBuf + (ringPos & (RING_SIZE - 1));
+    status = tinfl_decompress(decomp, zlibData + inPos, &inBytes, ringBuf, outStart, &outBytes, flags);
     inPos += inBytes;
-    outPos += outBytes;
-  } while (status == TINFL_STATUS_HAS_MORE_OUTPUT || status == TINFL_STATUS_NEEDS_MORE_INPUT);
-  free(decomp);
-  free(idatBuf);
 
-  Serial.printf("[PNG] inflate: outPos=%d, expected=%d, status=%d\n", outPos, rawSize, status);
-  if (status != TINFL_STATUS_DONE || outPos != rawSize) { Serial.println("[PNG] inflate FAILED"); free(rawBuf); return false; }
+    // デコードされたバイトを行バッファに詰める
+    size_t bytesAvail = outBytes;
+    uint8_t* src = outStart;
+    while (bytesAvail > 0 && curY < pngH) {
+      size_t need = rowBytes - rowBufPos;
+      size_t take = (bytesAvail < need) ? bytesAvail : need;
+      memcpy(rowRaw + rowBufPos, src, take);
+      rowBufPos += take;
+      src += take;
+      bytesAvail -= take;
 
-  // フィルタ復元 & Spriteに描画
-  int stride = (int)(rowBytes - 1); // filterByte除く1行のバイト数
-  uint8_t* prevRow = nullptr;
-  uint8_t* curRow = (uint8_t*)malloc(stride);
-  if (!curRow) { free(rawBuf); return false; }
-  uint8_t* prevRowBuf = (uint8_t*)calloc(stride, 1);
-  if (!prevRowBuf) { free(rawBuf); free(curRow); return false; }
-
-  // 全行フィルタ復元しつつ、間引きでSpriteに描画
-  // pngW x pngH → spriteSize x spriteSize にニアレストネイバー縮小
-  for (uint32_t y = 0; y < pngH; y++) {
-    uint8_t filterType = rawBuf[y * rowBytes];
-    uint8_t* src = rawBuf + y * rowBytes + 1;
-
-    int bpp = max(1, (channels * bitDepth + 7) / 8);
-    for (int i = 0; i < stride; i++) {
-      uint8_t raw = src[i];
-      uint8_t a = (i >= bpp) ? curRow[i - bpp] : 0;
-      uint8_t b = prevRowBuf[i];
-      uint8_t c = (i >= bpp) ? prevRowBuf[i - bpp] : 0;
-
-      switch (filterType) {
-        case 0: curRow[i] = raw; break;
-        case 1: curRow[i] = raw + a; break;
-        case 2: curRow[i] = raw + b; break;
-        case 3: curRow[i] = raw + ((a + b) >> 1); break;
-        case 4: {
-          int p = (int)a + b - c;
-          int pa = abs(p - a), pb = abs(p - b), pc = abs(p - c);
-          curRow[i] = raw + ((pa <= pb && pa <= pc) ? a : (pb <= pc) ? b : c);
-          break;
-        }
-        default: curRow[i] = raw; break;
-      }
-    }
-
-    // この行がSpriteのどの行に対応するか（ニアレストネイバー）
-    int destY = y * spriteSize / pngH;
-    // 次の行が同じdestYなら描画スキップ（最後にマッチした行だけ描画）
-    bool shouldDraw = (y == pngH - 1) || ((int)((y+1) * spriteSize / pngH) != destY);
-
-    if (shouldDraw && destY < spriteSize) {
-      for (int dx = 0; dx < spriteSize; dx++) {
-        uint32_t srcX = dx * pngW / spriteSize;
-        uint8_t r, g, b_val;
-        if (colorType == 3) {
-          uint8_t idx;
-          if (bitDepth == 8) { idx = curRow[srcX]; }
-          else {
-            int pixelsPerByte = 8 / bitDepth;
-            int byteIdx = srcX / pixelsPerByte;
-            int bitOffset = (pixelsPerByte - 1 - (srcX % pixelsPerByte)) * bitDepth;
-            idx = (curRow[byteIdx] >> bitOffset) & ((1 << bitDepth) - 1);
+      if (rowBufPos >= rowBytes) {
+        // 1行分揃った → フィルタ復元
+        filterType = rowRaw[0];
+        uint8_t* rawData = rowRaw + 1;
+        for (int i = 0; i < stride; i++) {
+          uint8_t raw = rawData[i];
+          uint8_t a = (i >= bpp) ? curRow[i - bpp] : 0;
+          uint8_t b = prevRowBuf[i];
+          uint8_t c = (i >= bpp) ? prevRowBuf[i - bpp] : 0;
+          switch (filterType) {
+            case 0: curRow[i] = raw; break;
+            case 1: curRow[i] = raw + a; break;
+            case 2: curRow[i] = raw + b; break;
+            case 3: curRow[i] = raw + ((a + b) >> 1); break;
+            case 4: {
+              int p = (int)a + b - c;
+              int pa = abs(p - a), pb = abs(p - b), pc = abs(p - c);
+              curRow[i] = raw + ((pa <= pb && pa <= pc) ? a : (pb <= pc) ? b : c);
+              break;
+            }
+            default: curRow[i] = raw; break;
           }
-          if (idx < paletteCount) { r = palette[idx][0]; g = palette[idx][1]; b_val = palette[idx][2]; }
-          else { r = g = b_val = 0; }
-        } else if (colorType == 0) { r = g = b_val = curRow[srcX]; }
-        else { r = curRow[srcX*channels]; g = curRow[srcX*channels+1]; b_val = curRow[srcX*channels+2]; }
-        sprite.drawPixel(dx, destY, sprite.color565(r, g, b_val));
+        }
+
+        // Spriteに描画（ニアレストネイバー縮小）
+        int destY = curY * spriteSize / pngH;
+        bool shouldDraw = (curY == pngH - 1) || ((int)((curY+1) * spriteSize / pngH) != destY);
+        if (shouldDraw && destY < spriteSize) {
+          for (int dx = 0; dx < spriteSize; dx++) {
+            uint32_t srcX = dx * pngW / spriteSize;
+            uint8_t r, g, b_val;
+            if (colorType == 3) {
+              uint8_t idx;
+              if (bitDepth == 8) { idx = curRow[srcX]; }
+              else {
+                int pixelsPerByte = 8 / bitDepth;
+                int byteIdx = srcX / pixelsPerByte;
+                int bitOffset = (pixelsPerByte - 1 - (srcX % pixelsPerByte)) * bitDepth;
+                idx = (curRow[byteIdx] >> bitOffset) & ((1 << bitDepth) - 1);
+              }
+              if (idx < paletteCount) { r = palette[idx][0]; g = palette[idx][1]; b_val = palette[idx][2]; }
+              else { r = g = b_val = 0; }
+            } else if (colorType == 0) { r = g = b_val = curRow[srcX]; }
+            else { r = curRow[srcX*channels]; g = curRow[srcX*channels+1]; b_val = curRow[srcX*channels+2]; }
+            sprite.drawPixel(dx, destY, sprite.color565(r, g, b_val));
+          }
+        }
+
+        memcpy(prevRowBuf, curRow, stride);
+        curY++;
+        rowBufPos = 0;
+        if (curY % 100 == 0) yield();
       }
     }
+    ringPos += outBytes;
 
-    memcpy(prevRowBuf, curRow, stride);
-    if (y % 50 == 0) yield();
+    if (status < 0) { Serial.printf("[PNG] inflate error: %d\n", status); decodeOk = false; break; }
   }
 
+  free(rowRaw);
+  free(decomp);
+  free(idatBuf);
+  free(ringBuf);
   free(curRow);
   free(prevRowBuf);
-  free(rawBuf);
+
+  Serial.printf("[PNG] streaming decode: %d/%d rows, status=%d\n", curY, pngH, status);
+  if (!decodeOk || curY < pngH) { Serial.println("[PNG] decode incomplete"); return false; }
   return true;
 }
 
