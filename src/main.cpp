@@ -461,16 +461,26 @@ bool downloadIcon(MetaEntry* meta) {
   if (imgBuf[0] == 0xFF && imgBuf[1] == 0xD8) {
     // JPEG
     Serial.println("[ICON] JPEG decode start");
-    // JPEGの元サイズを取得してスケール選択
+    // JPEGの元サイズとタイプを取得
     int jpgW = 0, jpgH = 0;
+    bool progressiveJpeg = false;
     for (int ji = 0; ji < totalRead - 9; ji++) {
       if (imgBuf[ji] == 0xFF && (imgBuf[ji+1] == 0xC0 || imgBuf[ji+1] == 0xC1 || imgBuf[ji+1] == 0xC2)) {
+        if (imgBuf[ji+1] == 0xC2) progressiveJpeg = true;
         jpgH = (imgBuf[ji+5] << 8) | imgBuf[ji+6];
         jpgW = (imgBuf[ji+7] << 8) | imgBuf[ji+8];
         break;
       }
     }
-    Serial.printf("[JPEG] original: %dx%d\n", jpgW, jpgH);
+    Serial.printf("[JPEG] original: %dx%d%s\n", jpgW, jpgH, progressiveJpeg ? " (progressive)" : "");
+    if (progressiveJpeg) {
+      Serial.println("[JPEG] progressive not supported, skip");
+      free(imgBuf);
+      sprite.deleteSprite();
+      meta->iconFailed = true;
+      iconPoolUsed[poolIdx] = false;
+      return false;
+    }
     // スケール選択: デコード後がspriteSize以下になる最大スケール
     jpeg_div_eSprite_t jpgScale = JPEG_DIV_ESPRITE_NONE;
     int maxDim = max(jpgW, jpgH);
